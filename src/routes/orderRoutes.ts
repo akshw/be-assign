@@ -9,16 +9,45 @@ const prisma = new PrismaClient();
 router.post("/", async (req, res) => {
   try {
     const { userId, productId, quantity } = req.body;
-    const order = await prisma.order.create({
-      data: {
-        userId,
-        productId,
-        quantity,
-      },
+
+    // Database transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Check current stock
+      const product = await tx.product.findUnique({
+        where: { id: productId },
+      });
+
+      if (!product || product.stockQuantity < quantity) {
+        throw new Error("Insufficient stock");
+      }
+
+      // Update product stock
+      const updatedProduct = await tx.product.update({
+        where: { id: productId },
+        data: {
+          stockQuantity: product.stockQuantity - quantity,
+        },
+      });
+
+      // Create order
+      const order = await tx.order.create({
+        data: {
+          userId,
+          productId,
+          quantity,
+        },
+      });
+
+      return { order, updatedProduct };
     });
-    res.json(order);
+
+    res.json(result);
   } catch (error) {
-    res.status(500).json({ error: "Error creating order" });
+    if (error instanceof Error && error.message === "Insufficient stock") {
+      res.status(400).json({ error: "Insufficient stock available" });
+    } else {
+      res.status(500).json({ error: "Error creating order" });
+    }
   }
 });
 
@@ -64,7 +93,7 @@ router.get("/stats/recent", async (req, res) => {
   }
 });
 
-// Get orders by user ID
+// Get orders by user ID along with product details to display to user on their orders page
 router.get("/user/:userId", async (req, res) => {
   try {
     const orders = await prisma.order.findMany({
